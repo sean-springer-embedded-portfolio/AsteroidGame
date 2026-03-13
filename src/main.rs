@@ -1,38 +1,35 @@
 #![no_std]
 #![no_main]
 
+use cortex_m_rt::entry;
+use embedded_graphics::{
+    Drawable,
+    pixelcolor::Rgb565,
+    prelude::*,
+    primitives::{PrimitiveStyleBuilder, Triangle},
+};
+use embedded_hal::delay::DelayNs;
+use embedded_hal_bus::spi::ExclusiveDevice;
+use microbit::hal::{
+    Spim,
+    gpio::{
+        Level, Output, PushPull,
+        p0::{P0_03, P0_04, P0_13, P0_17},
+        p1::P1_02,
+    },
+    spim::{self, Frequency},
+    timer::Timer,
+};
+use mipidsi::{
+    Builder,
+    models::GC9A01,
+    options::{ColorInversion, Orientation, Rotation},
+};
 use panic_rtt_target as _;
 use rtt_target::rprintln;
 use rtt_target::rtt_init_print;
 
-use cortex_m_rt::entry;
-use microbit::{
-    board::Board,
-    display::nonblocking::Display,
-    hal::{
-        Timer,
-        gpio::{
-            Floating, Input, Level, Output, PushPull,
-            p0::{P0_03, P0_04, P0_13, P0_17},
-            p1::P1_02,
-        },
-        gpiote::Gpiote,
-        pac, saadc,
-        saadc::{Saadc, SaadcConfig},
-        spim::{Frequency as SpimFrequency, MODE_0, MODE_3, Pins as SpimPins, Spim},
-    },
-    pac::{Interrupt, NVIC, TIMER0, TIMER1, TIMER2, TIMER3, interrupt},
-};
-
-use display_interface_spi::SPIInterface;
-use embedded_hal_bus::spi::ExclusiveDevice;
-use gc9a01::{Gc9a01, SPIDisplayInterface, prelude::*};
-
-use embedded_graphics::{
-    pixelcolor::Rgb565,
-    prelude::*,
-    primitives::{PrimitiveStyle, PrimitiveStyleBuilder, Triangle},
-};
+use libm::{cosf, roundf, sinf}; // for f32 (single precision)
 
 type SclPin = P0_17<Output<PushPull>>; //e13
 type SdaPin = P0_13<Output<PushPull>>; //e15
@@ -44,45 +41,86 @@ type RstPin = P0_04<Output<PushPull>>; // e2
 fn main() -> ! {
     rtt_init_print!();
 
-    let board = Board::take().unwrap();
+    let board = microbit::Board::take().unwrap();
 
-    let peripherals = unsafe { pac::Peripherals::steal() };
+    let mut timer0 = Timer::new(board.TIMER0);
 
-    let scl_pin = board.pins.p0_17.into_push_pull_output(Level::Low);
-    let sda_pin = board.pins.p0_13.into_push_pull_output(Level::Low); //p0-14 is the a button
-    let dc = board.edge.e01.into_push_pull_output(Level::Low).degrade();
-    let cs = board.edge.e16.into_push_pull_output(Level::Low).degrade(); // P16 as CS, keep High (low V) while writing data and can set to Low (high V) when finished to save power
-    let mut rst = board.edge.e02.into_push_pull_output(Level::Low).degrade();
-    let mut delay = Timer::new(board.TIMER0);
-    let mut delay1 = Timer::new(board.TIMER1);
+    // Setup SPI
+    let sck = board.pins.p0_17.into_push_pull_output(Level::Low).degrade();
+    let coti = board.pins.p0_13.into_push_pull_output(Level::Low).degrade();
 
-    let spim_pins = SpimPins {
-        sck: Some(scl_pin.degrade()),
-        mosi: Some(sda_pin.degrade()),
-        miso: None,
+    let dc = board.edge.e01.into_push_pull_output(Level::Low);
+    let cs = board.edge.e16.into_push_pull_output(Level::Low);
+    let rst = board.edge.e02.into_push_pull_output(Level::High);
+
+    let spi_bus = Spim::new(
+        board.SPIM3,
+        microbit::hal::spim::Pins {
+            sck: Some(sck),
+            mosi: Some(coti),
+            miso: None,
+        },
+        Frequency::M32,
+        spim::MODE_0,
+        0xFF, // ORC overflow character
+    );
+    let spi = display_interface_spi::SPIInterface::new(
+        ExclusiveDevice::new_no_delay(spi_bus, cs).unwrap(),
+        dc,
+    );
+
+    // Setup GC9A01 display using mipidsi
+    let mut display = Builder::new(GC9A01, spi)
+        .orientation(Orientation::new().rotate(Rotation::Deg180))
+        .invert_colors(ColorInversion::Inverted)
+        .reset_pin(rst)
+        .init(&mut timer0)
+        .unwrap();
+
+    // Call `embedded_graphics` `clear()` trait method
+    <_ as embedded_graphics::draw_target::DrawTarget>::clear(&mut display, Rgb565::WHITE).unwrap();
+
+    let triangle = |color| {
+        // make upward-pointing triangle
+        let triangle_style = PrimitiveStyleBuilder::new().fill_color(color).build();
+        Triangle::new(
+            Point { x: 120, y: 70 },  // top vertex (apex)
+            Point { x: 70, y: 170 },  // bottom-left vertex
+            Point { x: 170, y: 170 }, // bottom-right vertex
+        )
+        .into_styled(triangle_style)
     };
-    let spim = Spim::new(
-        peripherals.SPIM0,
-        spim_pins,
-        SpimFrequency::M8,
-        MODE_0,
-        0xFF,
-    );
-    let spi_device = ExclusiveDevice::new_no_delay(spim, cs).unwrap();
-    let interface = SPIDisplayInterface::new(spi_device, dc);
-    let mut display = Gc9a01::new(
-        interface,
-        DisplayResolution240x240,
-        DisplayRotation::Rotate0,
-    );
 
-    display.reset(&mut rst, &mut delay1).unwrap();
-    display.init(&mut delay1).unwrap();
+    let mut triangles = [triangle(Rgb565::BLUE), triangle(Rgb565::RED)];
 
-    display.set_draw_area((0, 0), (239, 239)).unwrap();
-    let mut iter = [0x00F8u16].into_iter();
-    let row: [u8; 240 * 240] = [0x77; 240 * 240];
+    let mut i: usize = 0;
+    let theta = 6.28319 / 12.0;
+    loop {
+        // Draw
+        let vertices = &mut triangles[i].primitive.vertices;
+        let center = Point::new(
+            (vertices[0].x + vertices[1].x + vertices[2].x) / 3,
+            (vertices[0].y + vertices[1].y + vertices[2].y) / 3,
+        );
+        for i in 0..3 {
+            vertices[i].x = roundf(
+                center.x as f32 + (vertices[i].x as f32 - center.x as f32) * cosf(theta)
+                    - (vertices[i].y as f32 - center.y as f32) * sinf(theta),
+            ) as i32;
+            vertices[i].y = roundf(
+                center.y as f32
+                    + (vertices[i].x as f32 - center.x as f32) * sinf(theta)
+                    + (vertices[i].y as f32 - center.y as f32) * cosf(theta),
+            ) as i32;
+            rprintln!("{} {}", vertices[i].x, vertices[i].y);
+        }
 
-    display.set_pixels((0, 0), (239, 239), &mut iter).unwrap();
-    loop {}
+        <_ as embedded_graphics::draw_target::DrawTarget>::clear(&mut display, Rgb565::WHITE)
+            .unwrap();
+        triangles[i].draw(&mut display).unwrap();
+        i ^= 1;
+
+        // Hold
+        timer0.delay_ms(1000);
+    }
 }

@@ -14,6 +14,10 @@ mipidsi = "0.8.0"
 panic-rtt-target = "0.2.0"
 rtt-target = "0.6.2"
 libm = "0.2.3" # Check crates.io for the latest version
+embedded-graphics-framebuf = "0.5.0"
+static_cell = "2.1.1"
+critical-section-lock-mut = "0.1.2"
+heapless = "0.9.2"
 
 [dependencies.microbit-v2]
 version = "0.16.0"

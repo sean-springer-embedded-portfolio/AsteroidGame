@@ -6,20 +6,25 @@ use embedded_graphics::{
     Drawable,
     pixelcolor::Rgb565,
     prelude::*,
-    primitives::{PrimitiveStyleBuilder, Triangle},
+    primitives::{Circle, Line, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle},
 };
+use embedded_graphics_framebuf::{FrameBuf, PixelIterator};
+
 use embedded_hal::delay::DelayNs;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use microbit::hal::{
-    Spim,
+    Rng, Spim,
     gpio::{
-        Level, Output, PushPull,
-        p0::{P0_03, P0_04, P0_13, P0_17},
+        Floating, Input, Level, Output, PullUp, PushPull,
+        p0::{P0_03, P0_04, P0_09, P0_10, P0_12, P0_13, P0_17},
         p1::P1_02,
     },
     spim::{self, Frequency},
     timer::Timer,
 };
+use microbit::pac::{Interrupt, NVIC, TIMER0, TIMER1, TIMER2, TIMER3, interrupt};
+
+use critical_section_lock_mut::LockMut;
 use mipidsi::{
     Builder,
     models::GC9A01,
@@ -29,35 +34,155 @@ use panic_rtt_target as _;
 use rtt_target::rprintln;
 use rtt_target::rtt_init_print;
 
+use core::sync::atomic::{AtomicI32, AtomicU32, Ordering::SeqCst};
+use heapless::Vec;
 use libm::{cosf, roundf, sinf}; // for f32 (single precision)
 
+mod missile;
+use missile::Missile;
+
+mod my_qdec;
+use my_qdec::{MyQdec, Pins, SamplePeriod};
+
+// Screen:
 type SclPin = P0_17<Output<PushPull>>; //e13
 type SdaPin = P0_13<Output<PushPull>>; //e15
 type DcPin = P0_03<Output<PushPull>>; //e1 - data / command - tell if command is brightnes of color
 type CsPin = P1_02<Output<PushPull>>; //e16 - chip selet, wakes up the display
 type RstPin = P0_04<Output<PushPull>>; // e2
 
+// Rotary Encoder:
+type S1 = P0_10<Input<Floating>>; //e08
+type S2 = P0_09<Input<Floating>>; //e09
+type Key = P0_12<Input<Floating>>; //e12
+
+const SCREEN_PX: usize = 240;
+const TICKS_PER_MS: u32 = 1_000_000 / 1_000;
+const FRAME_RATE_MS: u32 = 100;
+const MIN_COOLDOWN_MS: u32 = 100;
+
+static MISSLE_V_MIN: AtomicI32 = AtomicI32::new(-2); //px per s
+static MISSLE_V_MAX: AtomicI32 = AtomicI32::new(2); //px per s
+static MISSLE_SPAWN_COOLDOWN_TIMER: AtomicU32 = AtomicU32::new(5_000); //ms
+static RND_GEN: LockMut<Rng> = LockMut::new();
+static MISSILE_LIST: LockMut<Vec<Missile, 50>> = LockMut::new();
+static SPAWN_TIMER: LockMut<Timer<TIMER2>> = LockMut::new();
+static MOVE_TIMER: LockMut<Timer<TIMER1>> = LockMut::new();
+
+#[interrupt]
+fn TIMER1() {
+    MISSILE_LIST.with_lock(|missile_list| {
+        for missile in missile_list {
+            missile.update_position(FRAME_RATE_MS);
+        }
+    });
+
+    MOVE_TIMER.with_lock(|move_timer| {
+        move_timer.reset_event();
+        move_timer.start(FRAME_RATE_MS * TICKS_PER_MS);
+    });
+}
+
+#[interrupt]
+fn TIMER2() {
+    rprintln!("spawn");
+    let mut vx: f32 = 1.0;
+    let mut vy: f32 = 1.0;
+    let min_v = MISSLE_V_MIN.fetch_sub(1, SeqCst);
+    let max_v = MISSLE_V_MAX.fetch_add(1, SeqCst);
+
+    RND_GEN.with_lock(|rand_gen| {
+        vx = rand_gen.random_u8() as f32 / 255.0;
+        vy = rand_gen.random_u8() as f32 / 255.0;
+    });
+    rprintln!(
+        "min {}, max {}, scaledx {}, xcaled y {}",
+        min_v,
+        max_v,
+        vx,
+        vy
+    );
+    let off_vx = roundf(vx * (max_v - min_v) as f32 + min_v as f32) as i32;
+    let off_vy = roundf(vy * (max_v - min_v) as f32 + min_v as f32) as i32;
+    rprintln!("{} {}", off_vx, off_vy);
+    if off_vx != 0 || off_vy != 0 {
+        let missle = Missile::new(off_vx, off_vy);
+
+        MISSILE_LIST.with_lock(|missile_list| {
+            let _ = missile_list.push(missle); //ignore capacity full
+        });
+    }
+
+    let cur_cooldown = MISSLE_SPAWN_COOLDOWN_TIMER.fetch_sub(100, SeqCst);
+    rprintln!("{}", cur_cooldown);
+    if cur_cooldown < MIN_COOLDOWN_MS {
+        MISSLE_SPAWN_COOLDOWN_TIMER.store(MIN_COOLDOWN_MS, SeqCst);
+    }
+
+    SPAWN_TIMER.with_lock(|span_timer| {
+        span_timer.reset_event();
+        //span_timer.start(MISSLE_SPAWN_COOLDOWN_TIMER.load(SeqCst) * TICKS_PER_MS);
+    });
+}
+
+fn init() {
+    SPAWN_TIMER.with_lock(|span_timer| {
+        span_timer.start(MISSLE_SPAWN_COOLDOWN_TIMER.load(SeqCst) * TICKS_PER_MS);
+    });
+
+    MOVE_TIMER.with_lock(|move_timer| {
+        move_timer.start(FRAME_RATE_MS * TICKS_PER_MS);
+    });
+}
+
 #[entry]
 fn main() -> ! {
     rtt_init_print!();
 
-    let board = microbit::Board::take().unwrap();
+    let missile_vec: Vec<Missile, 50> = Vec::new();
+    MISSILE_LIST.init(missile_vec);
 
-    let mut timer0 = Timer::new(board.TIMER0);
+    let board = microbit::Board::take().unwrap();
+    let mut display_timer = Timer::new(board.TIMER0);
+    let mut missle_timer = Timer::new(board.TIMER1);
+    missle_timer.enable_interrupt();
+    missle_timer.reset_event();
+    MOVE_TIMER.init(missle_timer);
+    let mut missle_spawn_timer = Timer::new(board.TIMER2);
+    missle_spawn_timer.enable_interrupt();
+    missle_spawn_timer.reset_event();
+    SPAWN_TIMER.init(missle_spawn_timer);
+
+    let random_gen = Rng::new(board.RNG);
+    RND_GEN.init(random_gen);
+
+    // Setup Rotary Encoder QDEc
+    let s1: S1 = board.edge.e08.into_floating_input();
+    let s2: S2 = board.edge.e09.into_floating_input();
+    let key: Key = board.edge.e12.into_floating_input();
+    let pins = Pins {
+        a: s2.degrade(),
+        b: s1.degrade(),
+        led: Some(key.degrade()),
+    };
+
+    let q_dec = MyQdec::new(board.QDEC, pins, SamplePeriod::_512us);
+    q_dec.enable();
+    q_dec.debounce(true);
 
     // Setup SPI
-    let sck = board.pins.p0_17.into_push_pull_output(Level::Low).degrade();
-    let coti = board.pins.p0_13.into_push_pull_output(Level::Low).degrade();
+    let sck: SclPin = board.pins.p0_17.into_push_pull_output(Level::Low);
+    let coti: SdaPin = board.pins.p0_13.into_push_pull_output(Level::Low);
 
-    let dc = board.edge.e01.into_push_pull_output(Level::Low);
-    let cs = board.edge.e16.into_push_pull_output(Level::Low);
-    let rst = board.edge.e02.into_push_pull_output(Level::High);
+    let dc: DcPin = board.edge.e01.into_push_pull_output(Level::Low);
+    let cs: CsPin = board.edge.e16.into_push_pull_output(Level::Low);
+    let rst: RstPin = board.edge.e02.into_push_pull_output(Level::High);
 
     let spi_bus = Spim::new(
         board.SPIM3,
         microbit::hal::spim::Pins {
-            sck: Some(sck),
-            mosi: Some(coti),
+            sck: Some(sck.degrade()),
+            mosi: Some(coti.degrade()),
             miso: None,
         },
         Frequency::M32,
@@ -71,56 +196,120 @@ fn main() -> ! {
 
     // Setup GC9A01 display using mipidsi
     let mut display = Builder::new(GC9A01, spi)
-        .orientation(Orientation::new().rotate(Rotation::Deg180))
+        .orientation(Orientation::new().rotate(Rotation::Deg0))
         .invert_colors(ColorInversion::Inverted)
         .reset_pin(rst)
-        .init(&mut timer0)
+        .init(&mut display_timer)
         .unwrap();
 
-    // Call `embedded_graphics` `clear()` trait method
-    <_ as embedded_graphics::draw_target::DrawTarget>::clear(&mut display, Rgb565::WHITE).unwrap();
+    let mut frame_data = [Rgb565::BLACK; SCREEN_PX * SCREEN_PX];
+    let mut frame_buffer = FrameBuf::new(&mut frame_data, SCREEN_PX, SCREEN_PX);
+    frame_buffer.clear(Rgb565::BLACK);
 
-    let triangle = |color| {
-        // make upward-pointing triangle
-        let triangle_style = PrimitiveStyleBuilder::new().fill_color(color).build();
-        Triangle::new(
-            Point { x: 120, y: 70 },  // top vertex (apex)
-            Point { x: 70, y: 170 },  // bottom-left vertex
-            Point { x: 170, y: 170 }, // bottom-right vertex
-        )
-        .into_styled(triangle_style)
-    };
+    let hypotenuse = 120;
+    let hypotenuse_f: f32 = hypotenuse as f32;
+    let slider_length = 10;
+    let slider_half_width = 10;
+    let p1_angle = 1.5708; //90 deg
+    let p2_angle = 4.71239; //270 deg
+    let slider_width = 10;
+    let mut origin_slider = Line::new(Point::new(0, -10), Point::new(0, 10)) //10,110 10,130
+        .into_styled(PrimitiveStyle::with_stroke(
+            Rgb565::RED,
+            slider_half_width * 2,
+        ));
+    let slider = origin_slider.translate(Point::new(120, hypotenuse));
+    //slider.draw(&mut display).unwrap();
 
-    let mut triangles = [triangle(Rgb565::BLUE), triangle(Rgb565::RED)];
+    let center_source = Circle::new(Point::new(120 - 10, 120 - 10), 20).into_styled(
+        PrimitiveStyleBuilder::new()
+            .fill_color(Rgb565::BLUE)
+            .build(),
+    );
 
     let mut i: usize = 0;
     let theta = 6.28319 / 12.0;
+    let step_size = 0.0174533 * 4.0; //2 deg * pi / 180
+    let mut cur_angle = 0.0_f32; //radians
+    let mut accumulation: i32 = 0;
+
+    unsafe {
+        NVIC::unmask(Interrupt::TIMER1); // non-blockign display timer
+        NVIC::unmask(Interrupt::TIMER2); // color change timer
+    }; // allow NVIC to handle GPIOTE signals
+    //clear any currently pending GPIOTE state
+    NVIC::unpend(Interrupt::TIMER1);
+    NVIC::unpend(Interrupt::TIMER2);
+
+    init();
+
     loop {
-        // Draw
-        let vertices = &mut triangles[i].primitive.vertices;
-        let center = Point::new(
-            (vertices[0].x + vertices[1].x + vertices[2].x) / 3,
-            (vertices[0].y + vertices[1].y + vertices[2].y) / 3,
+        let value = q_dec.read(); //each click is 4 counts, 20 total counts per revolution
+        accumulation += value as i32;
+
+        cur_angle = step_size * (accumulation / 4) as f32;
+
+        // slider rotation of endpoints and scaling
+        let new_p1_angle = p1_angle + cur_angle;
+        let new_p2_angle = p2_angle + cur_angle;
+        let new_p1 = Point::new(
+            roundf(hypotenuse_f * cosf(new_p1_angle) / 12.0) as i32,
+            roundf(hypotenuse_f * sinf(new_p1_angle) / 12.0) as i32,
         );
-        for i in 0..3 {
-            vertices[i].x = roundf(
-                center.x as f32 + (vertices[i].x as f32 - center.x as f32) * cosf(theta)
-                    - (vertices[i].y as f32 - center.y as f32) * sinf(theta),
-            ) as i32;
-            vertices[i].y = roundf(
-                center.y as f32
-                    + (vertices[i].x as f32 - center.x as f32) * sinf(theta)
-                    + (vertices[i].y as f32 - center.y as f32) * cosf(theta),
-            ) as i32;
-            rprintln!("{} {}", vertices[i].x, vertices[i].y);
+        let new_p2 = Point::new(
+            roundf(hypotenuse_f * cosf(new_p2_angle) / 12.0) as i32,
+            roundf(hypotenuse_f * sinf(new_p2_angle) / 12.0) as i32,
+        );
+        let slider = Line::new(new_p1, new_p2)
+            .into_styled(PrimitiveStyle::with_stroke(
+                Rgb565::RED,
+                slider_half_width * 2,
+            ))
+            .translate(Point::new(120, 120));
+
+        // center point translation
+        let new_x = roundf(hypotenuse_f * cosf(cur_angle)) as i32;
+        let new_y = roundf(hypotenuse_f * sinf(cur_angle)) as i32;
+        let slider = slider.translate(Point::new(new_x, new_y));
+
+        let mut min_x = new_x - slider_width;
+        let mut max_x = new_x + slider_width;
+        let mut min_y = new_y - slider_width;
+        let mut max_y = new_y + slider_width;
+
+        if min_x > max_x {
+            let temp = min_x;
+            min_x = max_x;
+            max_x = temp;
         }
+        if min_y > max_y {
+            let temp = min_y;
+            min_y = max_y;
+            max_y = temp;
+        }
+        rprintln!("{}-{}, {}-{}", min_x, max_x, min_y, max_y);
+        frame_buffer.clear(Rgb565::BLACK);
 
-        <_ as embedded_graphics::draw_target::DrawTarget>::clear(&mut display, Rgb565::WHITE)
-            .unwrap();
-        triangles[i].draw(&mut display).unwrap();
-        i ^= 1;
+        MISSILE_LIST.with_lock(|missile_list| {
+            for missile in missile_list {
+                let obj = missile.get_graphic();
+                let pos = missile.get_position();
+                rprintln!("{:?}", pos);
+                if pos.x >= min_x && pos.x <= max_x {
+                    if pos.y >= min_y && pos.y <= max_y {
+                        // then hit
+                        rprintln!("hit!");
+                        continue; //dont render
+                    }
+                }
 
-        // Hold
-        timer0.delay_ms(1000);
+                obj.draw(&mut frame_buffer);
+            }
+        });
+
+        slider.draw(&mut frame_buffer).unwrap();
+        center_source.draw(&mut frame_buffer).unwrap();
+
+        display.draw_iter(frame_buffer.into_iter()).unwrap();
     }
 }

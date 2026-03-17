@@ -44,6 +44,9 @@ use missile::Missile;
 mod my_qdec;
 use my_qdec::{MyQdec, Pins, SamplePeriod};
 
+mod slider;
+use slider::Slider;
+
 // Screen:
 type SclPin = P0_17<Output<PushPull>>; //e13
 type SdaPin = P0_13<Output<PushPull>>; //e15
@@ -62,7 +65,7 @@ const FRAME_RATE_MS: u32 = 100;
 const MIN_COOLDOWN_MS: u32 = 100;
 const ASTEROID_COUNT: usize = 50;
 const ASTEROID_COOLDOWN_RATE: u32 = 100;
-const CLICKS_PER_DEDENT: u32 = 4;
+const CLICKS_PER_DEDENT: i32 = 4;
 
 static MISSLE_V_MIN: AtomicI32 = AtomicI32::new(-30); //px per s
 static MISSLE_V_MAX: AtomicI32 = AtomicI32::new(30); //px per s
@@ -101,7 +104,7 @@ fn TIMER2() {
 
     let off_vx = roundf(vx * (max_v - min_v) as f32 + min_v as f32) as i32;
     let off_vy = roundf(vy * (max_v - min_v) as f32 + min_v as f32) as i32;
-    rprintln!("{} {}", off_vx, off_vy);
+
     if off_vx != 0 || off_vy != 0 {
         let missle = Missile::new(off_vx, off_vy);
 
@@ -205,17 +208,9 @@ fn main() -> ! {
 
     let hypotenuse = 120;
     let hypotenuse_f: f32 = hypotenuse as f32;
-    let slider_length = 10;
-    let slider_half_width = 10;
     let p1_angle = 1.5708; //90 deg
     let p2_angle = 4.71239; //270 deg
-    let slider_width = 10;
-    let mut origin_slider = Line::new(Point::new(0, -10), Point::new(0, 10)) //10,110 10,130
-        .into_styled(PrimitiveStyle::with_stroke(
-            Rgb565::RED,
-            slider_half_width * 2,
-        ));
-    let slider = origin_slider.translate(Point::new(120, hypotenuse));
+    let slider_width: i32 = 20;
 
     let center_source = Circle::new(Point::new(120 - 10, 120 - 10), 20).into_styled(
         PrimitiveStyleBuilder::new()
@@ -223,9 +218,8 @@ fn main() -> ! {
             .build(),
     );
 
-    let mut i: usize = 0;
-    let theta = 6.28319 / 12.0;
-    let step_size = 0.0174533 * 4.0; //2 deg * pi / 180
+    //let theta = 6.28319 / 12.0;
+    let step_size = 0.0174533 * 4.0; //4 deg * pi / 180 = 90 total steps around the circle
     let mut cur_angle = 0.0_f32; //radians
     let mut accumulation: i32 = 0;
 
@@ -237,53 +231,15 @@ fn main() -> ! {
     NVIC::unpend(Interrupt::TIMER1);
     NVIC::unpend(Interrupt::TIMER2);
 
+    let mut slider = Slider::new();
+
     init();
 
     loop {
         let value = q_dec.read(); //each click is 4 counts, 20 total counts per revolution
         accumulation += value as i32;
 
-        cur_angle = step_size * (accumulation / CLICKS_PER_DEDENT) as f32;
-
-        // slider rotation of endpoints and scaling
-        let new_p1_angle = p1_angle + cur_angle;
-        let new_p2_angle = p2_angle + cur_angle;
-        let new_p1 = Point::new(
-            roundf(hypotenuse_f * cosf(new_p1_angle) / 12.0) as i32,
-            roundf(hypotenuse_f * sinf(new_p1_angle) / 12.0) as i32,
-        );
-        let new_p2 = Point::new(
-            roundf(hypotenuse_f * cosf(new_p2_angle) / 12.0) as i32,
-            roundf(hypotenuse_f * sinf(new_p2_angle) / 12.0) as i32,
-        );
-        let slider = Line::new(new_p1, new_p2)
-            .into_styled(PrimitiveStyle::with_stroke(
-                Rgb565::RED,
-                slider_half_width * 2,
-            ))
-            .translate(Point::new(120, 120));
-
-        // center point translation
-        let new_x = roundf(hypotenuse_f * cosf(cur_angle)) as i32;
-        let new_y = roundf(hypotenuse_f * sinf(cur_angle)) as i32;
-        let slider = slider.translate(Point::new(new_x, new_y));
-
-        let slider_pos = slider.primitive.midpoint();
-        let mut min_x = slider_pos.x - slider_width;
-        let mut max_x = slider_pos.x + slider_width;
-        let mut min_y = slider_pos.y - slider_width;
-        let mut max_y = slider_pos.y + slider_width;
-
-        if min_x > max_x {
-            let temp = min_x;
-            min_x = max_x;
-            max_x = temp;
-        }
-        if min_y > max_y {
-            let temp = min_y;
-            min_y = max_y;
-            max_y = temp;
-        }
+        slider.update(accumulation / CLICKS_PER_DEDENT);
 
         frame_buffer.clear(Rgb565::BLACK);
 
@@ -293,12 +249,9 @@ fn main() -> ! {
                 let pos = missile.get_position();
 
                 if missile.is_alive() {
-                    if pos.x >= min_x && pos.x <= max_x {
-                        if pos.y >= min_y && pos.y <= max_y {
-                            // then hit
-                            missile.destroy();
-                            continue; //dont render
-                        }
+                    if slider.check_for_collision(&pos) {
+                        missile.destroy();
+                        continue; //dont render
                     }
 
                     obj.draw(&mut frame_buffer);
@@ -306,7 +259,7 @@ fn main() -> ! {
             }
         });
 
-        slider.draw(&mut frame_buffer).unwrap();
+        slider.get_graphic().draw(&mut frame_buffer).unwrap();
         center_source.draw(&mut frame_buffer).unwrap();
 
         display.draw_iter(frame_buffer.into_iter()).unwrap();

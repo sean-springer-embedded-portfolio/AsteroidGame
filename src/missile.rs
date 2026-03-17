@@ -7,7 +7,7 @@ use embedded_graphics::{
     pixelcolor,
     primitives::{Circle, PrimitiveStyle, PrimitiveStyleBuilder, Styled},
 };
-use rtt_target::rprintln;
+//use rtt_target::rprintln;
 
 pub struct Missile {
     vx: i32,

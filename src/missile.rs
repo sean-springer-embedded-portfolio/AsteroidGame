@@ -16,6 +16,7 @@ pub struct Missile {
     loc_y: f32,
     graphic: Styled<Circle, PrimitiveStyle<Rgb565>>, //top-left corner of bounding square and radius
     center: Point,
+    alive: bool,
 }
 
 impl Missile {
@@ -47,7 +48,16 @@ impl Missile {
             loc_y: Missile::CENTER_START as f32,
             graphic: circle_style,
             center: Point::new(Self::CENTER_START, Self::CENTER_START),
+            alive: true,
         }
+    }
+
+    pub fn destroy(&mut self) {
+        self.alive = false;
+    }
+
+    pub fn is_alive(&self) -> bool {
+        self.alive
     }
 
     pub fn get_position(&self) -> Point {

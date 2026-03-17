@@ -6,7 +6,7 @@ use embedded_graphics::{
     Drawable,
     pixelcolor::Rgb565,
     prelude::*,
-    primitives::{Circle, Line, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle},
+    primitives::{Circle, Line, PrimitiveStyle, PrimitiveStyleBuilder},
 };
 use embedded_graphics_framebuf::{FrameBuf, PixelIterator};
 
@@ -60,12 +60,16 @@ const SCREEN_PX: usize = 240;
 const TICKS_PER_MS: u32 = 1_000_000 / 1_000;
 const FRAME_RATE_MS: u32 = 100;
 const MIN_COOLDOWN_MS: u32 = 100;
+const ASTEROID_COUNT: usize = 50;
+const ASTEROID_COOLDOWN_RATE: u32 = 100;
+const CLICKS_PER_DEDENT: u32 = 4;
 
-static MISSLE_V_MIN: AtomicI32 = AtomicI32::new(-2); //px per s
-static MISSLE_V_MAX: AtomicI32 = AtomicI32::new(2); //px per s
-static MISSLE_SPAWN_COOLDOWN_TIMER: AtomicU32 = AtomicU32::new(5_000); //ms
+static MISSLE_V_MIN: AtomicI32 = AtomicI32::new(-30); //px per s
+static MISSLE_V_MAX: AtomicI32 = AtomicI32::new(30); //px per s
+static MISSLE_SPAWN_COOLDOWN_TIMER: AtomicU32 =
+    AtomicU32::new(ASTEROID_COUNT as u32 * ASTEROID_COOLDOWN_RATE); //ms
 static RND_GEN: LockMut<Rng> = LockMut::new();
-static MISSILE_LIST: LockMut<Vec<Missile, 50>> = LockMut::new();
+static MISSILE_LIST: LockMut<Vec<Missile, ASTEROID_COUNT>> = LockMut::new();
 static SPAWN_TIMER: LockMut<Timer<TIMER2>> = LockMut::new();
 static MOVE_TIMER: LockMut<Timer<TIMER1>> = LockMut::new();
 
@@ -85,23 +89,16 @@ fn TIMER1() {
 
 #[interrupt]
 fn TIMER2() {
-    rprintln!("spawn");
     let mut vx: f32 = 1.0;
     let mut vy: f32 = 1.0;
-    let min_v = MISSLE_V_MIN.fetch_sub(1, SeqCst);
-    let max_v = MISSLE_V_MAX.fetch_add(1, SeqCst);
+    let min_v = MISSLE_V_MIN.load(SeqCst);
+    let max_v = MISSLE_V_MAX.load(SeqCst);
 
     RND_GEN.with_lock(|rand_gen| {
         vx = rand_gen.random_u8() as f32 / 255.0;
         vy = rand_gen.random_u8() as f32 / 255.0;
     });
-    rprintln!(
-        "min {}, max {}, scaledx {}, xcaled y {}",
-        min_v,
-        max_v,
-        vx,
-        vy
-    );
+
     let off_vx = roundf(vx * (max_v - min_v) as f32 + min_v as f32) as i32;
     let off_vy = roundf(vy * (max_v - min_v) as f32 + min_v as f32) as i32;
     rprintln!("{} {}", off_vx, off_vy);
@@ -113,15 +110,15 @@ fn TIMER2() {
         });
     }
 
-    let cur_cooldown = MISSLE_SPAWN_COOLDOWN_TIMER.fetch_sub(100, SeqCst);
-    rprintln!("{}", cur_cooldown);
+    let cur_cooldown = MISSLE_SPAWN_COOLDOWN_TIMER.fetch_sub(ASTEROID_COOLDOWN_RATE, SeqCst);
+
     if cur_cooldown < MIN_COOLDOWN_MS {
         MISSLE_SPAWN_COOLDOWN_TIMER.store(MIN_COOLDOWN_MS, SeqCst);
     }
 
     SPAWN_TIMER.with_lock(|span_timer| {
         span_timer.reset_event();
-        //span_timer.start(MISSLE_SPAWN_COOLDOWN_TIMER.load(SeqCst) * TICKS_PER_MS);
+        span_timer.start(MISSLE_SPAWN_COOLDOWN_TIMER.load(SeqCst) * TICKS_PER_MS);
     });
 }
 
@@ -219,7 +216,6 @@ fn main() -> ! {
             slider_half_width * 2,
         ));
     let slider = origin_slider.translate(Point::new(120, hypotenuse));
-    //slider.draw(&mut display).unwrap();
 
     let center_source = Circle::new(Point::new(120 - 10, 120 - 10), 20).into_styled(
         PrimitiveStyleBuilder::new()
@@ -247,7 +243,7 @@ fn main() -> ! {
         let value = q_dec.read(); //each click is 4 counts, 20 total counts per revolution
         accumulation += value as i32;
 
-        cur_angle = step_size * (accumulation / 4) as f32;
+        cur_angle = step_size * (accumulation / CLICKS_PER_DEDENT) as f32;
 
         // slider rotation of endpoints and scaling
         let new_p1_angle = p1_angle + cur_angle;
@@ -272,10 +268,11 @@ fn main() -> ! {
         let new_y = roundf(hypotenuse_f * sinf(cur_angle)) as i32;
         let slider = slider.translate(Point::new(new_x, new_y));
 
-        let mut min_x = new_x - slider_width;
-        let mut max_x = new_x + slider_width;
-        let mut min_y = new_y - slider_width;
-        let mut max_y = new_y + slider_width;
+        let slider_pos = slider.primitive.midpoint();
+        let mut min_x = slider_pos.x - slider_width;
+        let mut max_x = slider_pos.x + slider_width;
+        let mut min_y = slider_pos.y - slider_width;
+        let mut max_y = slider_pos.y + slider_width;
 
         if min_x > max_x {
             let temp = min_x;
@@ -287,23 +284,25 @@ fn main() -> ! {
             min_y = max_y;
             max_y = temp;
         }
-        rprintln!("{}-{}, {}-{}", min_x, max_x, min_y, max_y);
+
         frame_buffer.clear(Rgb565::BLACK);
 
         MISSILE_LIST.with_lock(|missile_list| {
             for missile in missile_list {
                 let obj = missile.get_graphic();
                 let pos = missile.get_position();
-                rprintln!("{:?}", pos);
-                if pos.x >= min_x && pos.x <= max_x {
-                    if pos.y >= min_y && pos.y <= max_y {
-                        // then hit
-                        rprintln!("hit!");
-                        continue; //dont render
-                    }
-                }
 
-                obj.draw(&mut frame_buffer);
+                if missile.is_alive() {
+                    if pos.x >= min_x && pos.x <= max_x {
+                        if pos.y >= min_y && pos.y <= max_y {
+                            // then hit
+                            missile.destroy();
+                            continue; //dont render
+                        }
+                    }
+
+                    obj.draw(&mut frame_buffer);
+                }
             }
         });
 

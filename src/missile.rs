@@ -1,3 +1,7 @@
+//!missile.rs
+//! 
+//! defines a missile (later re=defined as an asteroid) projectile 
+
 #![allow(unused)]
 
 use embedded_graphics::pixelcolor::{PixelColor, Rgb565};
@@ -10,23 +14,24 @@ use embedded_graphics::{
 //use rtt_target::rprintln;
 
 pub struct Missile {
-    vx: i32,
+    vx: i32, // belocity components
     vy: i32,
-    loc_x: f32,
+    loc_x: f32, // center
     loc_y: f32,
     graphic: Styled<Circle, PrimitiveStyle<Rgb565>>, //top-left corner of bounding square and radius
-    center: Point,
-    alive: bool,
+    alive: bool, // indicator that this has been captured or not
 }
 
 impl Missile {
     const RADIUS: u32 = 5;
     const CENTER_START: i32 = 120;
     const PEN_WIDTH: u32 = 2;
-    const MAX_VALUE: i32 = 240;
+    const MAX_VALUE: i32 = 240; // screen limitations
     const MIN_VALUE: i32 = 0;
-    const COLOR: Rgb565 = Rgb565::WHITE;
+    const COLOR: Rgb565 = Rgb565::WHITE; // render color
 
+    /// generate a new asteroid centered at the middle of the screen, moving 
+    /// wiht velocity vx, by
     pub fn new(vx: i32, vy: i32) -> Self {
         let circle_style = Circle::new(
             Point::new(
@@ -47,23 +52,28 @@ impl Missile {
             loc_x: Missile::CENTER_START as f32,
             loc_y: Missile::CENTER_START as f32,
             graphic: circle_style,
-            center: Point::new(Self::CENTER_START, Self::CENTER_START),
             alive: true,
         }
     }
 
+    /// update the state of this asteroid to "destroyed" / captured
     pub fn destroy(&mut self) {
         self.alive = false;
     }
 
+    /// query whether this asteroid has been "destroyed" / captured yet
     pub fn is_alive(&self) -> bool {
         self.alive
     }
 
+    /// return circle's center location as a Point
     pub fn get_position(&self) -> Point {
         self.graphic.primitive.center()
     }
 
+    /// update the asteroids positions based upon the elapsed number of ms 
+    /// since the last frame / update and this objects vx and vy velocity 
+    /// components
     pub fn update_position(&mut self, d_t_ms: u32) {
         let d_t: f32 = d_t_ms as f32 / 1000.0;
         let distance_x = self.vx as f32 * d_t;
@@ -80,6 +90,8 @@ impl Missile {
         self.graphic = self.graphic.translate(Point::new(translate_x, translate_y)); // final - initial
     }
 
+    /// return a reference to the underlying embedded graphics object. Likely 
+    /// useful for rendering / writing to a frame buffer
     pub fn get_graphic(&self) -> &Styled<Circle, PrimitiveStyle<Rgb565>> {
         &self.graphic
     }

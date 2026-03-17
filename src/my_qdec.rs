@@ -1,4 +1,11 @@
-// the hal Pin<Input<PushPull>> is incorrect and should be Pin<Input<Floating>>
+//! my_qdec.rs
+//! 
+//! This is just a copy-paste of thee Microbit v2 HAL QDEC implementation but 
+//! with the update that the pin types have been templated and a marker trait 
+//! called InputPinState has been defined and applied to all of the Input pin types
+//! so that the my_qdec pin types can be trait bound (apparently no other trait 
+//! bound on Input pin types existed)
+
 #![allow(unused)]
 
 use core::marker::PhantomData;
@@ -174,6 +181,7 @@ where
     }
 }
 
+/// notice the T: InputPinState trait bounds
 pub struct Pins<T>
 where
     T: InputPinState,

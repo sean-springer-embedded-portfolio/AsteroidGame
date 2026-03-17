@@ -12,7 +12,7 @@ Copyright (c) 2026 Sean Springer
 ## Physical Setup
 
 
-<img src="imgs/hsv-schematic.png" alt="Wiring Schematic" width="500" height="300">
+<img src="imgs/wiring-schematic.png" alt="Wiring Schematic" width="300" height="500">
 
 ## Build and Run
 

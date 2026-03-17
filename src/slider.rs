@@ -16,8 +16,8 @@ impl Slider {
     const HYPOTENUSE: u32 = 120;
     const HYPOTENUSE_F: f32 = Slider::HYPOTENUSE as f32;
     const SCALED_HYPOT_FACTOR: f32 = 12.0; //scale 120 / 12 = 10 = half width
-    const P1_START_ANGLE: f32 = 1.5708; //90 deg
-    const P2_START_ANGLE: f32 = 4.71239; //270 deg
+    const P1_START_ANGLE: f32 = core::f32::consts::FRAC_PI_2; //1.5708; //90 deg
+    const P2_START_ANGLE: f32 = core::f32::consts::FRAC_PI_2 * 3.1; //4.71239; //270 deg
     const SLIDER_WIDTH: i32 = 20;
     const SLIDER_HALF_WIDTH: i32 = Slider::SLIDER_WIDTH / 2;
     const STEP_SIZE: f32 = 0.0174533 * 4.0; //4 deg * pi / 180 = 90 total steps around the circle
@@ -79,21 +79,15 @@ impl Slider {
         let mut max_y = slider_pos.y + Slider::SLIDER_HALF_WIDTH;
 
         if min_x > max_x {
-            let temp = min_x;
-            min_x = max_x;
-            max_x = temp;
+            core::mem::swap(&mut min_x, &mut max_x);
         }
         if min_y > max_y {
-            let temp = min_y;
-            min_y = max_y;
-            max_y = temp;
+            core::mem::swap(&mut min_y, &mut max_y);
         }
 
         let mut collided = false;
-        if pos.x >= min_x && pos.x <= max_x {
-            if pos.y >= min_y && pos.y <= max_y {
-                collided = true;
-            }
+        if pos.x >= min_x && pos.x <= max_x && pos.y >= min_y && pos.y <= max_y {
+            collided = true;
         }
 
         collided

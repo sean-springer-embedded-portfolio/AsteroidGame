@@ -6,23 +6,22 @@ use embedded_graphics::{
     Drawable,
     pixelcolor::Rgb565,
     prelude::*,
-    primitives::{Circle, Line, PrimitiveStyle, PrimitiveStyleBuilder},
+    primitives::{Circle, PrimitiveStyleBuilder},
 };
-use embedded_graphics_framebuf::{FrameBuf, PixelIterator};
+use embedded_graphics_framebuf::FrameBuf;
 
-use embedded_hal::delay::DelayNs;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use microbit::hal::{
     Rng, Spim,
     gpio::{
-        Floating, Input, Level, Output, PullUp, PushPull,
+        Floating, Input, Level, Output, PushPull,
         p0::{P0_03, P0_04, P0_09, P0_10, P0_12, P0_13, P0_17},
         p1::P1_02,
     },
     spim::{self, Frequency},
     timer::Timer,
 };
-use microbit::pac::{Interrupt, NVIC, TIMER0, TIMER1, TIMER2, TIMER3, interrupt};
+use microbit::pac::{Interrupt, NVIC, TIMER1, TIMER2, interrupt};
 
 use critical_section_lock_mut::LockMut;
 use mipidsi::{
@@ -31,12 +30,12 @@ use mipidsi::{
     options::{ColorInversion, Orientation, Rotation},
 };
 use panic_rtt_target as _;
-use rtt_target::rprintln;
+//use rtt_target::rprintln;
 use rtt_target::rtt_init_print;
 
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering::SeqCst};
 use heapless::Vec;
-use libm::{cosf, roundf, sinf}; // for f32 (single precision)
+use libm::roundf; // for f32 (single precision)
 
 mod missile;
 use missile::Missile;
@@ -206,22 +205,11 @@ fn main() -> ! {
     let mut frame_buffer = FrameBuf::new(&mut frame_data, SCREEN_PX, SCREEN_PX);
     frame_buffer.clear(Rgb565::BLACK);
 
-    let hypotenuse = 120;
-    let hypotenuse_f: f32 = hypotenuse as f32;
-    let p1_angle = 1.5708; //90 deg
-    let p2_angle = 4.71239; //270 deg
-    let slider_width: i32 = 20;
-
     let center_source = Circle::new(Point::new(120 - 10, 120 - 10), 20).into_styled(
         PrimitiveStyleBuilder::new()
             .fill_color(Rgb565::BLUE)
             .build(),
     );
-
-    //let theta = 6.28319 / 12.0;
-    let step_size = 0.0174533 * 4.0; //4 deg * pi / 180 = 90 total steps around the circle
-    let mut cur_angle = 0.0_f32; //radians
-    let mut accumulation: i32 = 0;
 
     unsafe {
         NVIC::unmask(Interrupt::TIMER1); // non-blockign display timer
@@ -232,6 +220,7 @@ fn main() -> ! {
     NVIC::unpend(Interrupt::TIMER2);
 
     let mut slider = Slider::new();
+    let mut accumulation: i32 = 0;
 
     init();
 
@@ -262,6 +251,6 @@ fn main() -> ! {
         slider.get_graphic().draw(&mut frame_buffer).unwrap();
         center_source.draw(&mut frame_buffer).unwrap();
 
-        display.draw_iter(frame_buffer.into_iter()).unwrap();
+        display.draw_iter(&frame_buffer).unwrap();
     }
 }

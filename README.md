@@ -12,6 +12,18 @@ AsteroidGame is a very simple game running on the MB2 using a TFT GC9A01 LCD scr
 and a rotary encoder knob for user controls. The goal is to block all asteroids from leaving the  
 screen and save the universe from catastrophe!
 
+## Game Play
+
+Asteroids will emit out of the red center circle object and head outwards towards the screen boarder.  
+Using the rotary encoder knob, you are granted control of the blue slider bar which will progress  
+around the outer edge of the screen. Your goal: block as many emitted asteroids before they reap havoc  
+in the rest of the universe!
+
+A total of 50 asteroids will be emitted over a gameplay with orthogonal veloctiy components randomly  
+chosen (using the MB2 hardware RNG) between -30 and 30 pixels per second. The asteroid spawn rate will  
+increase as the game progress, starting at 5 second intervals and decreasing by 100ms after each spawn.  
+After gameplay has concluded, feel free to hit the reset button on the MB2 to begin a new game!
+
 ## How It Works
 
 2 of the MB2 timers are dedicate to spawning new asteroids and updating the positions of currently  

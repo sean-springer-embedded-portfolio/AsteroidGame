@@ -47,7 +47,7 @@ impl Slider {
 
     /// because this screen is round, the slider will progress around the outer edge.
     /// the slider is a rectangle and so will need to be both rotated (so it's perpindicular
-    /// to the face points toward the center of the screen circle) and then translated. It is
+    /// and the face points toward the center of the screen circle) and then translated. It is
     /// much easier calculation to rotate an object about the center of the geometry (0,0) and
     /// then translate (which is exactly what happens here).
     pub fn update(&mut self, angle: i32) {

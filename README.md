@@ -32,7 +32,8 @@ velocity components (bounded to +- 30 px / sec). The rotary encoder knob state i
 peripheral capturing movemenet at 512 us.
 
 Graphic rendering is currently streamed to the display (not DMA) but a frame buffer is first built to  
-speed-up rendering. There is no RTOS currnetly implemented - #bare metal games!
+speed-up rendering. There is no RTOS currnetly implemented - #bare metal games! The data bits are streamed  
+via SPIM3 on the MB2 and 32MBs.
 
 The following MB2 peripherals are used by this game:
 
@@ -41,6 +42,7 @@ The following MB2 peripherals are used by this game:
 3. TIMER1
 4. TIMER2
 5. RNG
+6. SPIM
 
 The rust embedded graphics crate is used to build each primitive shape shown on the display  
 and mipidsi crate is used as the driver to communicate to the LCD display over I2C.
@@ -55,7 +57,7 @@ For the TFT Display:
 4. CsPin = P1_02 / e16
 5. RstPin = P0_04 / e2
 
-for the Rotary Encoder:
+for the Rotary Encoder (note Key is currently unused by game play):
 
 1. S1 = P0_10 / e08
 2. S2 = P0_09 / e09
@@ -71,6 +73,7 @@ Image of the MB2 + Edge Connector and the wiring described above:
 2. Score Keeper
 3. End Game Display
 4. Game Restart Options
+5. Incorporate Key of the rotary encoder (push)
 
 ## Build and Run
 
@@ -80,6 +83,9 @@ then this program can be `flashed` onto the MB2 nRF52820 using
 ```bash
 cargo embed --release
 ```
+
+It is strongly encouraged that you build in --release to decrease any overhead that may occur  
+in debug mode especially wrt streaming data to the display.
 
 ## Sources
 
@@ -91,6 +97,7 @@ cargo embed --release
 6. [Microbit Hal Docs](https://docs.rs/microbit/latest/microbit/hal/index.html)
 7. [Microbit V2 Crate](https://docs.rs/microbit-v2/latest/microbit/)
 8. [HSV](https://en.wikipedia.org/wiki/HSL_and_HSV)
+9. [Bart Massey's gc9a01 TFT Example](https://github.com/pdx-cs-rust-embedded/mb2-tft-display)
 
 ## License
 
